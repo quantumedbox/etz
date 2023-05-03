@@ -9,6 +9,11 @@
 #
 # No include, no linking minimalistic and hacky single file CLI game.
 #
+# Taken steps:
+# - Removed last 3 zeroed bytes of phdr, for some reason elf loader can extend it automatically.
+# - No dynamic memory mapping, .bss is used instead, which leaves mapping zeroing to loader.
+# - Assume success, take approaches that cannot fail.
+#
 # Currently only targets i386-linux-gnu.
 #
 # To compile and run just execute this file.
@@ -18,17 +23,21 @@
 # - ELF madness:
 # https://www.muppetlabs.com/~breadbox/software/tiny/teensy.html
 #
-# - i386 GCC options:
+# - Size related i386 GCC/LD options:
 # http://ptspts.blogspot.com/2013/12/how-to-make-smaller-c-and-c-binaries.html
 #
 # - Neat demoscene wiki page:
 # https://in4k.github.io/wiki/linux
 #
+# - vt340 manual for sixel graphics programming:
+# https://www.vt100.net/docs/vt3xx-gp/chapter14.html
+# https://www.vt100.net/docs/vt3xx-gp/chapter13.html
+#
 #*/
 
+set -e
 cat << ELF_HEADER_SOURCE > ./elf.as
 offset = 0x08048000
-.section .ehdr
 .text
 ehdr_start:
   .byte      0x7F                       # e_ident
@@ -47,8 +56,6 @@ ehdr_start:
   .word      1                          # e_phnum
 ehdrsize = . - ehdr_start
 
-.section .phdr
-.text
 phdr_start:
   .long      1                          # p_type
   .long      0                          # p_offset
@@ -65,19 +72,13 @@ ELF_HEADER_SOURCE
 cat << LINKER_SCRIPT_SOURCE > ./ld.scr
 SECTIONS {
   . = 0x08048000;
-  /* todo: Use .ehdr for variable storage */
-  .ehdr ALIGN(0x1) : SUBALIGN(0x1) { KEEP(elf.o (.ehdr)) }
+  /* todo: Would 1 alignment break C assumptions? */
   .text ALIGN(0x4) : SUBALIGN(0x4) { *(.text) *(.rodata) }
   .data ALIGN(0x4) : SUBALIGN(0x4) { *(.data) }
+		__p_filesz = .;
 
 	/* Use .phdr memory as start of .bss after application is loaded */
-	OVERLAY : {
-  	.phdr {
-  		KEEP(elf.o (.phdr))
-  		__p_filesz = .;
-  	}
-  	.bss { *(.bss) }
-  }
+	.bss : { *(.bss) }
   __p_memsz = .;
 
 	/DISCARD/ : {
@@ -99,14 +100,15 @@ cc -c -o ./bare-bones.o -x c -std=gnu89 $0 -m32 -nostdlib -Os \
 	-fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident -fno-stack-check \
 	-mno-stack-arg-probe -Qn -fno-PIC -fno-PIE -static -fno-plt -fno-pic \
 	-ffunction-sections -fdata-sections
-ld -m elf_i386 -T ld.scr -s -o bare-bones ./bare-bones.o \
+ld -m elf_i386 -T ld.scr -s -o bare-bones ./elf.o ./bare-bones.o \
 	--build-id=none -z norelro -z noseparate-code --no-eh-frame-hdr \
 	--no-ld-generated-unwind-info --hash-style=sysv \
 	-z nodynamic-undefined-weak --gc-sections
+set +e
 if [ -x $(command -v upx) ]; then
 	upx ./bare-bones --force-execve &> /dev/null
 fi
-./bare-bones
+xterm -geometry 125x40 -ti vt340 ./bare-bones
 exit;
 #endif
 
@@ -118,6 +120,8 @@ exit;
  */
 #define SYS_EXIT_NUMBER 1
 #define SYS_WRITE_NUMBER 4
+#define SYS_EXECVE_NUMBER 11
+#define SYS_VFORK_NUMBER 190
 
 #define FD_STDIN 0
 #define FD_STDOUT 1
@@ -134,17 +138,40 @@ exit;
  */
 #define SYS_WRITE(p_fd, p_msg, p_msg_len)                                      \
   asm volatile("int $0x80"                                                     \
-               : "=a"(sys_call_result)                                         \
-               : "a"(SYS_WRITE_NUMBER), "b"(p_fd), "c"((const void *)(p_msg)), \
-                 "d"(p_msg_len), "m"(*(const char(*)[p_msg_len])(p_msg)))
+               : "=a"(sys_result)                                              \
+               : "a"(SYS_WRITE_NUMBER), "b"(p_fd), "c"(p_msg), "d"(p_msg_len), \
+                 "m"(*(const char(*)[p_msg_len])(p_msg)))
 
 #define SYS_WRITE_LITERAL(p_fd, p_msg) SYS_WRITE(p_fd, p_msg, sizeof(p_msg) - 1)
 
-static int sys_call_result;
+/* https://man7.org/linux/man-pages/man2/execve.2.html */
+#define SYS_EXECVE(p_path, p_argv)                                             \
+  asm volatile("int $0x80"                                                     \
+               : "=a"(sys_result)                                              \
+               : "a"(SYS_EXECVE_NUMBER), "b"(p_path), "c"(p_argv), "d"(0),     \
+                 "m"(*(const char(*)[sizeof(p_path)])(p_path)),                \
+                 "m"(*(const char *const char(*)[p_argv])(p_argv)))
 
-/* todo: Zero .bss */
+/* https://man7.org/linux/man-pages/man2/vfork.2.html */
+#define SYS_VFORK()                                                            \
+  asm volatile("int $0x80" : "=a"(sys_result) : "a"(SYS_VFORK_NUMBER));
+
+#define ASCII_ESCAPE "\x1b"
+#define SIXEL_MODE_START ASCII_ESCAPE "P7q"
+#define SIXEL_MODE_END ASCII_ESCAPE "\\"
+
+static int sys_result;
+
+/* todo: Prelude could be 'unmapped' and reused as .data after it is executed,
+ * assuming no reentry */
 __attribute((naked)) void entry(void) {
-  SYS_WRITE_LITERAL(FD_STDOUT, "hello world\n");
+  while (1) {
+    int i;
+    SYS_WRITE_LITERAL(FD_STDOUT, ASCII_ESCAPE "[0;0H" SIXEL_MODE_START);
+    for (i = 0; i < 83; ++i)
+      SYS_WRITE_LITERAL(FD_STDOUT, "!750~-");
+    SYS_WRITE_LITERAL(FD_STDOUT, "!750~-" SIXEL_MODE_END);
+  }
 
   SYS_EXIT(0);
   __builtin_unreachable();
