@@ -1,0 +1,153 @@
+#if 0
+#/*
+# ______                 ______
+# | ___ \                | ___ \
+# | |_/ / __ _ _ __ ___  | |_/ / ___  _ __   ___  ___ 
+# | ___ \/ _` | '__/ _ \ | ___ \/ _ \| '_ \ / _ \/ __|
+# | |_/ / (_| | | |  __/ | |_/ / (_) | | | |  __/\__ \
+# \____/ \__,_|_|  \___| \____/ \___/|_| |_|\___||___/
+#
+# No include, no linking minimalistic and hacky single file CLI game.
+#
+# Currently only targets i386-linux-gnu.
+#
+# To compile and run just execute this file.
+#
+# Used resources
+# --------------
+# - ELF madness:
+# https://www.muppetlabs.com/~breadbox/software/tiny/teensy.html
+#
+# - i386 GCC options:
+# http://ptspts.blogspot.com/2013/12/how-to-make-smaller-c-and-c-binaries.html
+#
+# - Neat demoscene wiki page:
+# https://in4k.github.io/wiki/linux
+#
+#*/
+
+cat << ELF_HEADER_SOURCE > ./elf.as
+offset = 0x08048000
+.section .ehdr
+.text
+ehdr_start:
+  .byte      0x7F                       # e_ident
+  .ascii     "ELF"
+  .skip      3, 1
+  .skip      9, 0
+  .word      2                          # e_type
+  .word      3                          # e_machine
+  .long      1                          # e_version
+  .long      entry                      # e_entry
+  .long      phdr_start - offset  			# e_phoff
+  .long      0                          # e_shoff
+  .long      0                          # e_flags
+  .word      ehdrsize                   # e_ehsize
+  .word      phdrsize                   # e_phentsize
+  .word      1                          # e_phnum
+ehdrsize = . - ehdr_start
+
+.section .phdr
+.text
+phdr_start:
+  .long      1                          # p_type
+  .long      0                          # p_offset
+  .long      offset               		  # p_vaddr
+  .long      0               						# p_paddr
+  .long      __p_filesz - offset        # p_filesz
+  .long      __p_memsz - offset         # p_memsz
+  .long      7                          # p_flags
+  .long      0x0001                     # p_align
+phdrsize = . - phdr_start
+ELF_HEADER_SOURCE
+
+#todo : Use / tmp /
+cat << LINKER_SCRIPT_SOURCE > ./ld.scr
+SECTIONS {
+  . = 0x08048000;
+  /* todo: Use .ehdr for variable storage */
+  .ehdr ALIGN(0x1) : SUBALIGN(0x1) { KEEP(elf.o (.ehdr)) }
+  .text ALIGN(0x4) : SUBALIGN(0x4) { *(.text) *(.rodata) }
+  .data ALIGN(0x4) : SUBALIGN(0x4) { *(.data) }
+
+	/* Use .phdr memory as start of .bss after application is loaded */
+	OVERLAY : {
+  	.phdr {
+  		KEEP(elf.o (.phdr))
+  		__p_filesz = .;
+  	}
+  	.bss { *(.bss) }
+  }
+  __p_memsz = .;
+
+	/DISCARD/ : {
+	  *(.note.*)
+	  *(.gnu*)
+	  *(.gcc*)
+	  *(.comment)
+	  *(.eh_frame*)
+	}
+}
+OUTPUT_FORMAT(binary)
+LINKER_SCRIPT_SOURCE
+
+as --32 -o elf.o elf.as
+cc -c -o ./bare-bones.o -x c -std=gnu89 $0 -m32 -nostdlib -Os \
+	-DBARE_BONES -Wall -Wextra -Wpedantic -Werror -march=core2 \
+	-fno-stack-protector -fomit-frame-pointer -mpreferred-stack-boundary=2 \
+	-falign-functions=1 -falign-jumps=1 -falign-loops=1 -fno-unwind-tables \
+	-fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident -fno-stack-check \
+	-mno-stack-arg-probe -Qn -fno-PIC -fno-PIE -static -fno-plt -fno-pic \
+	-ffunction-sections -fdata-sections
+ld -m elf_i386 -T ld.scr -s -o bare-bones ./bare-bones.o \
+	--build-id=none -z norelro -z noseparate-code --no-eh-frame-hdr \
+	--no-ld-generated-unwind-info --hash-style=sysv \
+	-z nodynamic-undefined-weak --gc-sections
+if [ -x $(command -v upx) ]; then
+	upx ./bare-bones --force-execve &> /dev/null
+fi
+./bare-bones
+exit;
+#endif
+
+#ifdef BARE_BONES
+
+/* todo: ELF header and linking script to reduce size further. */
+
+/* https://chromium.googlesource.com/chromiumos/docs/+/master/constants/syscalls.md#x86-32_bit
+ */
+#define SYS_EXIT_NUMBER 1
+#define SYS_WRITE_NUMBER 4
+
+#define FD_STDIN 0
+#define FD_STDOUT 1
+
+/* todo: Generic SYS_CALL macro?
+ * https://github.com/Jorengarenar/CMObALL/blob/master/cmoball.h
+ */
+
+#define SYS_EXIT(p_return_code)                                                \
+  asm volatile("int $0x80" : : "a"(SYS_EXIT_NUMBER), "b"(p_return_code))
+
+/* todo: "m" is only valid for GCC, not Clang.
+ * https://stackoverflow.com/questions/56432259/how-can-i-indicate-that-the-memory-pointed-to-by-an-inline-asm-argument-may-be
+ */
+#define SYS_WRITE(p_fd, p_msg, p_msg_len)                                      \
+  asm volatile("int $0x80"                                                     \
+               : "=a"(sys_call_result)                                         \
+               : "a"(SYS_WRITE_NUMBER), "b"(p_fd), "c"((const void *)(p_msg)), \
+                 "d"(p_msg_len), "m"(*(const char(*)[p_msg_len])(p_msg)))
+
+#define SYS_WRITE_LITERAL(p_fd, p_msg) SYS_WRITE(p_fd, p_msg, sizeof(p_msg) - 1)
+
+static int sys_call_result;
+
+/* todo: Zero .bss */
+__attribute((naked)) void entry(void) {
+  SYS_WRITE_LITERAL(FD_STDOUT, "hello world\n");
+
+  SYS_EXIT(0);
+  __builtin_unreachable();
+}
+
+#endif /* #ifdef BARE_BONES */
