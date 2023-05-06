@@ -1,13 +1,21 @@
+#include <stddef.h>
 #if 0
 #/*
-# ______                 ______
-# | ___ \                | ___ \
-# | |_/ / __ _ _ __ ___  | |_/ / ___  _ __   ___  ___ 
-# | ___ \/ _` | '__/ _ \ | ___ \/ _ \| '_ \ / _ \/ __|
-# | |_/ / (_| | | |  __/ | |_/ / (_) | | | |  __/\__ \
-# \____/ \__,_|_|  \___| \____/ \___/|_| |_|\___||___/
+# __/\\\\\\\\\\\\\\\_____________________________        
+#  _\/\\\///////////______________________________       
+#  _\/\\\_________________/\\\____________________      
+#   _\/\\\\\\\\\\\______/\\\\\\\\\\\__/\\\\\\\\\\\_     
+#    _\/\\\///////______\////\\\////__\///////\\\/__    
+#     _\/\\\________________\/\\\___________/\\\/____   
+#      _\/\\\________________\/\\\_/\\_____/\\\/______  
+#       _\/\\\\\\\\\\\\\\\____\//\\\\\____/\\\\\\\\\\\_ 
+#        _\///////////////______\/////____\///////////__
 #
-# No include, no linking minimalistic and hacky single file CLI game.
+# No include, minimal linking minimalist and hacky single file game made for https://itch.io/jam/4mb-jam-2023.
+#
+# To compile and run just execute this file.
+#
+# Currently it only targets i386-linux-gnu.
 #
 # Taken steps:
 # - Removed last 6 zeroed bytes of ehdr, for some reason elf loader can extend it automatically.
@@ -17,10 +25,6 @@
 # - Assume cwd has executable in it.
 # - Zeroing of p_paddr is compressing freindly and shaves a few bytes, same with p_align for non-load commands.
 # - ELF alignment restrictions are ignored.
-#
-# Currently only targets amd64-linux-gnu.
-#
-# To compile and run just execute this file.
 #
 # Used resources
 # --------------
@@ -51,6 +55,9 @@
 # - To use padsp we had to make our executable dynamically linkable:
 # https://refspecs.linuxbase.org/elf/gabi4+/ch5.dynamic.html
 #
+# - Audio generation algorithms:
+# https://www.musicdsp.org/en/latest/
+#
 #*/
 
 set -e
@@ -62,6 +69,7 @@ ehdrstart:
   .byte      0x7F                       # e_ident
   .ascii     "ELF"
   .skip      3, 1
+#todo : This space could be used.
   .skip      9, 0
   .word      2                          # e_type
   .word      3                          # e_machine
@@ -72,32 +80,12 @@ ehdrstart:
   .long      0                          # e_flags
   .word      ehdrsize                   # e_ehsize
   .word      32                         # e_phentsize
-  .word      3                          # e_phnum
+  .word      1                          # e_phnum
 #Could be removed, but GDB will not happy about it:
   .skip      6, 0
 ehdrsize = . - ehdrstart
 
 phdrstart:
-#PT_INTERP
-  .long      3                          # p_type
-  .long      interp - elfoff            # p_offset
-  .long      interp                     # p_vaddr
-  .long      0                          # p_paddr
-  .long      interpsz                   # p_filesz
-  .long      interpsz                   # p_memsz
-  .long      7                          # p_flags
-  .long      0x0000                     # p_align
-
-#PT_DYNAMIC
-  .long      2                          # p_type
-  .long      dynamic - elfoff           # p_offset
-  .long      dynamic                    # p_vaddr
-  .long      0                          # p_paddr
-  .long      dynamicsz                  # p_filesz
-  .long      dynamicsz                  # p_memsz
-  .long      7                          # p_flags
-  .long      0x0000                     # p_align
-
 #PT_LOAD
   .long      1                          # p_type
   .long      0                          # p_offset
@@ -106,37 +94,7 @@ phdrstart:
   .long      filesz                     # p_filesz
   .long      memsz                      # p_memsz
   .long      7                          # p_flags
-  .long      0x1000                     # p_align
-
-interp:
-  .asciz "/lib/ld-linux.so.2"
-interpsz = . - interp
-
-dynamic:
-#Fake hash:
-  .long       4,  symbols   # DT_HASH
-  .long       5,  strings   # DT_STRTAB
-  .long       6,  symbols   # DT_SYMTAB
-  .long       10, stringssz # DT_STRSZ
-  .long       11, 16        # DT_SYMENT
-  .long       17, relocs    # DT_REL
-  .long       18, relocssz  # DT_RELSZ
-  .long       19, 8         # DT_RELENT
-  .long       0,  0
-dynamicsz = . - dynamic
-
-#todo : Can use zero range from beginning of ELF.
-strings:
-  .byte   0
-stringssz = . - strings
-
-#todo : Can use zero range from beginning of ELF.
-symbols:
-  .long   0, 0, 0, 0
-symbolssz = . - symbols
-
-relocs:
-relocssz = . - relocs
+  .long      0x0000                     # p_align
 ELF_HEADER_SOURCE
 
 #todo : Use / tmp /
@@ -167,51 +125,47 @@ OUTPUT_FORMAT(binary)
 LINKER_SCRIPT_SOURCE
 
 as --32 -o elf.o elf.as
-cc -c -o ./bare-bones.o -x c -std=gnu89 $0 -m32 -nostdlib -Os \
-  -DBARE_BONES -Wall -Wextra -Wpedantic -Werror -march=core2 \
+cc -c -o ./etz.o -x c -std=gnu89 $0 -m32 -nostdlib -Os \
+  -DETZ -Wall -Wextra -Wpedantic -Werror -march=core2 \
   -fno-stack-protector -fomit-frame-pointer -mpreferred-stack-boundary=2 \
   -falign-functions=1 -falign-jumps=1 -falign-loops=1 -fno-unwind-tables \
   -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident -fno-stack-check \
   -mno-stack-arg-probe -Qn -fno-PIC -fno-PIE -static -fno-plt \
-  -ffunction-sections -fdata-sections -DDEBUG
-ld -m elf_i386 -T ld.scr -s -o bare-bones ./elf.o ./bare-bones.o \
+  -ffunction-sections -fdata-sections
+ld -m elf_i386 -T ld.scr -s -o etz ./elf.o ./etz.o \
   --build-id=none -z norelro -z noseparate-code --no-eh-frame-hdr \
   --no-ld-generated-unwind-info --hash-style=sysv \
   -z nodynamic-undefined-weak --gc-sections
 set +e
 if [ -x $(command -v upx) ]; then
-  upx ./bare-bones -q --best --ultra-brute
+  upx ./etz -q --best --ultra-brute
 fi
-./bare-bones
+./etz
 exit;
 #endif
 
-#ifdef BARE_BONES
+#ifdef ETZ
 
 #define LENGTHOF(p_arr) (sizeof(p_arr) / sizeof(*p_arr))
 
 #ifdef DEBUG
 /* todo: int3 */
+#define STR_(p_str) #p_str
+#define STR(p_str) STR_(p_str)
 #define ASSERT(p_expr)                                                         \
   {                                                                            \
     if (!(p_expr)) {                                                           \
-      SYS_WRITE_LITERAL(FD_STDOUT, "assert failed for: " #p_expr "\n");        \
+      SYS_WRITE_LITERAL(FD_STDOUT,                                             \
+                        STR(__LINE__) ": assert failed for: " #p_expr "\n");   \
       SYS_EXIT(-1);                                                            \
     }                                                                          \
   }
 #else
-#define ASSERT(p_expr)                                                         \
-  if (!(p_expr))                                                               \
-  __builtin_unreachable()
+#define ASSERT(p_expr) (p_expr) ? (void)0 : __builtin_unreachable()
 #endif /* ifdef DEBUG */
 
 /* https://chromium.googlesource.com/chromiumos/docs/+/master/constants/syscalls.md#x86-32_bit
  */
-#define SYS_EXIT_NUMBER 1
-#define SYS_WRITE_NUMBER 4
-#define SYS_OPEN_NUMBER 5
-#define SYS_EXECVE_NUMBER 11
-#define SYS_VFORK_NUMBER 190
 
 /* todo: Generic SYS_CALL macro?
  * https://github.com/Jorengarenar/CMObALL/blob/master/cmoball.h
@@ -219,7 +173,10 @@ exit;
 
 /* https://man7.org/linux/man-pages/man2/exit.2.html */
 #define SYS_EXIT(p_return_code)                                                \
-  asm volatile("int $0x80" : : "a"(SYS_EXIT_NUMBER), "b"(p_return_code))
+  {                                                                            \
+    asm volatile("int $0x80" : : "a"(1), "b"(p_return_code));                  \
+    __builtin_unreachable();                                                   \
+  }
 
 /* https://man7.org/linux/man-pages/man2/write.2.html
  * todo: "m" is only valid for GCC, not Clang.
@@ -228,11 +185,11 @@ exit;
 #define SYS_WRITE(p_fd, p_msg, p_msg_len)                                      \
   asm volatile("int $0x80"                                                     \
                : "=a"(sys_result)                                              \
-               : "a"(SYS_WRITE_NUMBER), "b"(p_fd), "c"(p_msg), "d"(p_msg_len)  \
+               : "a"(4), "b"(p_fd), "c"(p_msg), "d"(p_msg_len)                 \
                : "memory")
 
-#define FD_STDIN 00
-#define FD_STDOUT 01
+#define FD_STDIN 0
+#define FD_STDOUT 1
 
 #define SYS_WRITE_LITERAL(p_fd, p_msg) SYS_WRITE(p_fd, p_msg, sizeof(p_msg) - 1)
 
@@ -240,11 +197,11 @@ exit;
 #define SYS_OPEN(p_fd_out, p_path, p_flags)                                    \
   asm volatile("int $0x80"                                                     \
                : "=a"(p_fd_out)                                                \
-               : "a"(SYS_OPEN_NUMBER), "b"(p_path), "c"(p_flags), "d"(0666),   \
+               : "a"(5), "b"(p_path), "c"(p_flags), "d"(0666),                 \
                  "m"(*(const char(*)[sizeof(p_path)])(p_path)))
 
-#define O_RDONLY 00
-#define O_WRONLY 01
+#define O_RDONLY 0
+#define O_WRONLY 1
 
 /* https://man7.org/linux/man-pages/man2/execve.2.html
  * note: Reuses NULL at the end of wrapping_args for envp
@@ -252,18 +209,38 @@ exit;
 #define SYS_EXECVE(p_path, p_argv, p_envp)                                     \
   asm volatile("int $0x80"                                                     \
                : "=a"(sys_result)                                              \
-               : "a"(SYS_EXECVE_NUMBER), "b"(p_path), "c"(p_argv), "d"(p_envp) \
+               : "a"(11), "b"(p_path), "c"(p_argv), "d"(p_envp)                \
                : "memory")
 
-/* https://man7.org/linux/man-pages/man2/vfork.2.html */
-#define SYS_VFORK(p_result_out)                                                \
-  asm volatile("int $0x80" : "=a"(p_result_out) : "a"(SYS_VFORK_NUMBER));
+/* https://man7.org/linux/man-pages/man2/fork.2.html */
+#define SYS_FORK(p_result_out)                                                 \
+  asm volatile("int $0x80" : "=a"(p_result_out) : "a"(2))
+
+/* https://man7.org/linux/man-pages/man2/pipe.2.html */
+#define SYS_PIPE(p_result_pipes)                                               \
+  asm volatile("int $0x80" : "=a"(sys_result) : "a"(42), "b"(p_result_pipes));
+
+/* https://man7.org/linux/man-pages/man2/dup2.2.html */
+#define SYS_DUP2(p_old, p_new)                                                 \
+  asm volatile("int $0x80"                                                     \
+               : "=a"(sys_result)                                              \
+               : "a"(63), "b"(p_old), "c"(p_new));
 
 #define ASCII_ESCAPE "\x1b"
 #define SIXEL_MODE_START ASCII_ESCAPE "P7q"
 #define SIXEL_MODE_END ASCII_ESCAPE "\\"
 
+/* todo: Try making it auto variable */
+static int sys_result;
+
+static const char exe[] = "./etz";
+static const char *const xterm_args[9] = {
+    " ", "-ti", "vt340", "-geometry", "125x40", "-e", exe, exe, (void *)0};
+static const char *const aplay_args[3] = {"aplay", "-fu8", (void *)0};
+
 /*
+static char buffer[512];
+
 static int int_to_buffer(int in, char *out) {
   int r = 0;
   if (in < 0) {
@@ -283,46 +260,48 @@ static int int_to_buffer(int in, char *out) {
 }
 */
 
-/* todo: Try making it auto variable */
-static int sys_result;
-
-/* todo: Shorten the executable name */
-/*
-static const char exe[] = "./bare-bones";
-static const char *const wrapping_args[8] = {
-    exe, "xterm", "-ti", "vt340", "-geometry", "125x40", exe, (void *)0};
-*/
-
 /* todo: Prelude could be 'unmapped' and reused as .data after it is executed,
  * assuming no reentry */
 __attribute((naked)) void entry(void) {
   char const **envp;
-  int dsp_fd;
+  int argc, apid, apipes[2];
 
-  /* Get envp to later pass to execve */
   asm inline("movl $4, %%eax\n\t"
-             "mull (%%esp)\n\t"
+             "movl (%%esp), %%ebx\n\t"
+             "mull %%ebx\n\t"
              "addl %%esp, %%eax\n\t"
              "addl $8, %%eax\n\t"
-             : "=a"(envp));
+             : "=a"(envp), "=b"(argc));
 
-  /* Try opening /dev/dsp, if not present - wrap current process in emulated
-   * vt340 xterm and padsp */
-  SYS_OPEN(dsp_fd, "/dev/dsp", O_WRONLY);
-  if (dsp_fd >= 0) {
+  /* Assume that argc == 1 means bootstrapping execution */
+  if (argc == 1) {
+    SYS_EXECVE("/usr/bin/xterm", xterm_args, envp);
+    ASSERT(0);
+  }
+
+  SYS_PIPE(apipes);
+  ASSERT(sys_result == 0);
+  SYS_FORK(apid);
+  ASSERT(apid >= 0);
+  if (!apid) {
+    /* Child process */
+    SYS_DUP2(apipes[0], FD_STDIN);
+    ASSERT(sys_result >= 0);
+    /* todo: Can we pass empty envp here? */
+    SYS_EXECVE("/usr/bin/aplay", aplay_args, envp);
+    ASSERT(0);
   }
 
   while (1) {
     int i;
+    SYS_WRITE(apipes[1], "\x00\x01", 2);
     SYS_WRITE_LITERAL(FD_STDOUT, ASCII_ESCAPE "[0;0H" SIXEL_MODE_START);
     for (i = 0; i < 83; ++i)
       SYS_WRITE_LITERAL(FD_STDOUT, "!750~-");
     SYS_WRITE_LITERAL(FD_STDOUT, "!750~-" SIXEL_MODE_END);
-    SYS_WRITE(dsp_fd, "\xff", 1);
   }
 
   SYS_EXIT(0);
-  __builtin_unreachable();
 }
 
-#endif /* #ifdef BARE_BONES */
+#endif /* #ifdef ETZ */
