@@ -1,11 +1,14 @@
 #if 0
 #/*
-# ______                 ______
-# | ___ \                | ___ \
-# | |_/ / __ _ _ __ ___  | |_/ / ___  _ __   ___  ___ 
-# | ___ \/ _` | '__/ _ \ | ___ \/ _ \| '_ \ / _ \/ __|
-# | |_/ / (_| | | |  __/ | |_/ / (_) | | | |  __/\__ \
-# \____/ \__,_|_|  \___| \____/ \___/|_| |_|\___||___/
+# __/\\\\\\\\\\\\\\\_____________________________        
+#  _\/\\\///////////______________________________       
+#  _\/\\\_________________/\\\____________________      
+#   _\/\\\\\\\\\\\______/\\\\\\\\\\\__/\\\\\\\\\\\_     
+#    _\/\\\///////______\////\\\////__\///////\\\/__    
+#     _\/\\\________________\/\\\___________/\\\/____   
+#      _\/\\\________________\/\\\_/\\_____/\\\/______  
+#       _\/\\\\\\\\\\\\\\\____\//\\\\\____/\\\\\\\\\\\_ 
+#        _\///////////////______\/////____\///////////__
 #
 # No include, no linking minimalistic and hacky single file CLI game.
 #
@@ -175,28 +178,28 @@ OUTPUT_FORMAT(binary)
 LINKER_SCRIPT_SOURCE
 
 as --64 -o elf.o elf.as
-cc -c -o ./bare-bones.o -x c -std=gnu89 $0 -nostdlib -Os \
-  -DBARE_BONES -Wall -Wextra -Wpedantic -Werror -march=core2 \
+cc -c -o ./etz.o -x c -std=gnu89 $0 -nostdlib -Os \
+  -DETZ -Wall -Wextra -Wpedantic -Werror -march=core2 \
   -fno-stack-protector -fomit-frame-pointer -mpreferred-stack-boundary=3 \
   -falign-functions=1 -falign-jumps=1 -falign-loops=1 -fno-unwind-tables \
   -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident -fno-stack-check \
   -mno-stack-arg-probe -Qn -fno-PIC -fno-PIE -static -fno-plt \
   -ffunction-sections -fdata-sections
-ld -m elf_x86_64 -T ld.scr -s -o bare-bones ./elf.o ./bare-bones.o \
+ld -m elf_x86_64 -T ld.scr -s -o etz ./elf.o ./etz.o \
   --build-id=none -z norelro -z noseparate-code --no-eh-frame-hdr \
   --no-ld-generated-unwind-info --hash-style=sysv \
   -z nodynamic-undefined-weak --gc-sections
 set +e
 if [ -x $(command -v upx) ]; then
-  upx ./bare-bones -q --best --ultra-brute
+  upx ./etz -q --best --ultra-brute
 fi
-./bare-bones
+./etz
 exit;
 #endif
 
-#ifdef BARE_BONES
+#ifdef ETZ
 
-#define EXELTR "./bare-bones"
+#define EXELTR "./etz"
 #define NULLPTR (void *)0
 #define LENGTHOF(p_arr) (sizeof(p_arr) / sizeof(*p_arr))
 
@@ -331,4 +334,4 @@ __attribute((naked)) void entry(void) {
   __builtin_unreachable();
 }
 
-#endif /* #ifdef BARE_BONES */
+#endif /* #ifdef ETZ */
