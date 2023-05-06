@@ -10,7 +10,15 @@
 #       _\/\\\\\\\\\\\\\\\____\//\\\\\____/\\\\\\\\\\\_ 
 #        _\///////////////______\/////____\///////////__
 #
-# No include, no linking minimalistic and hacky single file CLI game.
+# No include, minimal linking minimalist and hacky single file game made for https://itch.io/jam/4mb-jam-2023.
+#
+# To compile and run just execute this file.
+#
+# Currently it only targets amd64-linux-gnu.
+#
+# Dependencies, all shipped with desktop Ubuntu 22.04:
+# - xterm with vt340 emulation
+# - pulse audio with padsp
 #
 # Taken steps:
 # - Removed last 6 zeroed bytes of ehdr, for some reason elf loader can extend it automatically.
@@ -20,10 +28,7 @@
 # - Assume cwd has executable in it.
 # - Zeroing of p_paddr is compressing freindly and shaves a few bytes, same with p_align for non-load commands.
 # - ELF alignment restrictions are ignored.
-#
-# Currently only targets amd64-linux-gnu.
-#
-# To compile and run just execute this file.
+# - No uppercase in source if it's only stylistic, this helps with compression.
 #
 # Used resources
 # --------------
@@ -54,17 +59,16 @@
 #*/
 
 set -e
-cat << ELF_HEADER_SOURCE > ./elf.as
+cat << elfhdr > ./elf.as
 elfoff = 0x08048000
 vaddr = 0x08048000
 .text
 ehdrstart:
-  .byte      0x7F                       # e_ident
+  .byte      0x7f                       # e_ident
   .ascii     "ELF"
   .byte      2, 1, 1
 .global dynopen
 dynopen:
-ninezeroes:
   .skip      9, 0
   .word      2                          # e_type
   .word      62                         # e_machine
@@ -76,7 +80,7 @@ ninezeroes:
   .word      ehdrsize                   # e_ehsize
   .word      56                         # e_phentsize
   .word      3                          # e_phnum
-#Could be removed, but GDB will not happy about it:
+#todo : Could be removed, but GDB will not happy about it:
   .skip      6, 0
 ehdrsize = . - ehdrstart
 
@@ -126,7 +130,7 @@ dynamic:
 symtab:
   .skip     24, 0
   .long     1               # strtab index
-  .byte     2 << 4 + 2, 0   # STB_GLOBAL, STT_FUNC, STV_DEFAULT
+  .byte     2 << 4 + 2, 0   # STB_WEAK, STT_FUNC, STV_DEFAULT
   .word     0               # No section header info
   .skip     17, 0
 strtab:
@@ -140,10 +144,10 @@ rela:
   .quad     1 << 32 + 1 # r_info
   .quad     0           # r_addend
 relasz = . - rela
-ELF_HEADER_SOURCE
+elfhdr
 
 #todo : Use / tmp /
-cat << LINKER_SCRIPT_SOURCE > ./ld.scr
+cat << ldscrsrc > ./ld.scr
 SECTIONS {
   . = 0x08048000;
   filestart = .;
@@ -167,11 +171,11 @@ SECTIONS {
   }
 }
 OUTPUT_FORMAT(binary)
-LINKER_SCRIPT_SOURCE
+ldscrsrc
 
 as --64 -o elf.o elf.as
 cc -c -o ./etz.o -x c -std=gnu89 $0 -nostdlib -Os \
-  -DETZ -Wall -Wextra -Wpedantic -Werror -march=core2 \
+  -Detz -Wall -Wextra -Wpedantic -Werror -march=core2 \
   -fno-stack-protector -fomit-frame-pointer -mpreferred-stack-boundary=3 \
   -falign-functions=1 -falign-jumps=1 -falign-loops=1 -fno-unwind-tables \
   -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident -fno-stack-check \
@@ -189,24 +193,24 @@ fi
 exit;
 #endif
 
-#ifdef ETZ
+#ifdef etz
 
-#define EXELTR "./etz"
-#define NULLPTR (void *)0
-#define LENGTHOF(p_arr) (sizeof(p_arr) / sizeof(*p_arr))
+#define exeltr "./etz"
+#define nullptr (void *)0
+#define length(p_arr) (sizeof(p_arr) / sizeof(*p_arr))
 
-#ifdef DEBUG
+#ifdef debug
 /* todo: int3 */
-#define ASSERT(p_expr)                                                         \
+#define assert(p_expr)                                                         \
   {                                                                            \
     if (!(p_expr)) {                                                           \
-      SYS_WRITE_LITERAL(FD_STDOUT, "assert failed for: " #p_expr "\n");        \
-      SYS_EXIT(-1);                                                            \
+      swritelit(0, "assert failed for: " #p_expr "\n");                        \
+      sexit(-1);                                                               \
     }                                                                          \
   }
 #else
-#define ASSERT(p_expr) (p_expr) ? (void)0 : __builtin_unreachable()
-#endif /* ifdef DEBUG */
+#define assert(p_expr) (p_expr) ? (void)0 : __builtin_unreachable()
+#endif /* ifdef debug */
 
 /* https://chromium.googlesource.com/chromiumos/docs/+/master/constants/syscalls.md#x86_64-64_bit
  */
@@ -216,47 +220,40 @@ exit;
  */
 
 /* https://man7.org/linux/man-pages/man2/exit.2.html */
-#define SYS_EXIT(p_return_code)                                                \
-  asm volatile("syscall" : : "a"(60), "D"(p_return_code) : "rcx", "r11")
+#define sexit(p_return_code)                                                   \
+  {                                                                            \
+    asm volatile("syscall" : : "a"(60), "D"(p_return_code) : "rcx", "r11");    \
+    __builtin_unreachable();                                                   \
+  }
 
 /* https://man7.org/linux/man-pages/man2/write.2.html
  * todo: "m" is only valid for GCC, not Clang.
  * https://stackoverflow.com/questions/56432259/how-can-i-indicate-that-the-memory-pointed-to-by-an-inline-asm-argument-may-be
  */
-#define SYS_WRITE(p_fd, p_msg, p_msg_len)                                      \
+#define swrite(p_fd, p_msg, p_msg_len)                                         \
   asm volatile("syscall"                                                       \
                : "=a"(sys_result)                                              \
                : "a"(1), "D"(p_fd), "S"(p_msg), "d"(p_msg_len)                 \
                : "rcx", "r11", "memory")
 
-#define FD_STDIN 0
-#define FD_STDOUT 1
-
-#define SYS_WRITE_LITERAL(p_fd, p_msg) SYS_WRITE(p_fd, p_msg, sizeof(p_msg) - 1)
+#define swritelit(p_fd, p_msg) swrite(p_fd, p_msg, sizeof(p_msg) - 1)
 
 /* https://man7.org/linux/man-pages/man2/open.2.html */
-#define SYS_OPEN(p_fd_out, p_path, p_flags)                                    \
+#define sopen(p_fd_out, p_path, p_flags)                                       \
   asm volatile("syscall"                                                       \
                : "=a"(p_fd_out)                                                \
                : "a"(2), "D"(p_path), "S"(p_flags), "d"(0666),                 \
                  "m"(*(const char(*)[sizeof(p_path)])(p_path))                 \
                : "rcx", "r11")
 
-#define O_RDONLY 0
-#define O_WRONLY 1
-
 /* https://man7.org/linux/man-pages/man2/execve.2.html
- * note: Reuses NULL at the end of wrapping_args for envp
+ * note: Reuses NULL at the end of wargs for envp
  */
-#define SYS_EXECVE(p_path, p_argv, p_envp)                                     \
+#define sexecve(p_path, p_argv, p_envp)                                        \
   asm volatile("syscall"                                                       \
                : "=a"(sys_result)                                              \
                : "a"(59), "D"(p_path), "S"(p_argv), "d"(p_envp)                \
                : "rcx", "r11", "memory")
-
-/* https://man7.org/linux/man-pages/man2/vfork.2.html */
-#define SYS_VFORK(p_result_out)                                                \
-  asm volatile("syscall" : "=a"(p_result_out) : "a"(58) : "rcx", "r11");
 
 #define ASCII_ESCAPE "\x1b"
 #define SIXEL_MODE_START ASCII_ESCAPE "P7q"
@@ -289,10 +286,10 @@ static int sys_result;
 extern int (*dynopen)(const char *filename, int flags, ...);
 
 /* todo: Shorten the executable name */
-static char const *const exe = EXELTR;
-#define NULLSTR &(exe[LENGTHOF(EXELTR) - 1])
-static char const *const wrapping_args[8] = {
-    NULLSTR, "xterm", "-ti", "vt340", "-geometry", "125x40", exe, NULLPTR};
+static char const *const exe = exeltr;
+#define nullstr &(exe[length(exeltr) - 1])
+static char const *const wargs[8] = {nullstr,     "xterm",  "-ti", "vt340",
+                                     "-geometry", "125x40", exe,   nullptr};
 
 /* todo: Prelude could be 'unmapped' and reused as .data after it is executed,
  * assuming no reentry */
@@ -307,23 +304,21 @@ __attribute((naked)) void entry(void) {
                  "addq %%rsp, %%rax\n\t"
                  "addq $16, %%rax\n\t"
                  : "=a"(envp));
-    SYS_EXECVE("/usr/bin/padsp", wrapping_args, envp);
-    ASSERT(0);
+    sexecve("/usr/bin/padsp", wargs, envp);
   }
 
-  ASSERT((dsp_fd = dynopen("/dev/dsp", O_WRONLY)) >= 0);
+  dsp_fd = dynopen("/dev/dsp", 1);
 
   while (1) {
     int i;
-    SYS_WRITE(dsp_fd, "\x10\x00", 2);
-    SYS_WRITE_LITERAL(FD_STDOUT, ASCII_ESCAPE "[0;0H" SIXEL_MODE_START);
+    swrite(dsp_fd, "\x10\x00", 2);
+    swritelit(0, ASCII_ESCAPE "[0;0H" SIXEL_MODE_START);
     for (i = 0; i < 83; ++i)
-      SYS_WRITE_LITERAL(FD_STDOUT, "!750~-");
-    SYS_WRITE_LITERAL(FD_STDOUT, "!750~-" SIXEL_MODE_END);
+      swritelit(0, "!750~-");
+    swritelit(0, "!750~-" SIXEL_MODE_END);
   }
 
-  SYS_EXIT(0);
-  __builtin_unreachable();
+  sexit(0);
 }
 
-#endif /* #ifdef ETZ */
+#endif /* #ifdef etz */
