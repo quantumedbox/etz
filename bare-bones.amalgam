@@ -26,15 +26,15 @@
 # --------------
 # - ELF madness:
 # https://man7.org/linux/man-pages/man5/elf.5.html
+# https://refspecs.linuxbase.org/elf/gabi4+/ch5.dynamic.html
 # https://www.muppetlabs.com/~breadbox/software/tiny/teensy.html
 # https://binaryresearch.github.io/2019/09/17/Analyzing-ELF-Binaries-with-Malformed-Headers-Part-1-Emulating-Tiny-Programs.html
 # https://ioactive.com/striking-back-gdb-and-ida-debuggers-through-malformed-elf-executables/
 # http://shell-storm.org/blog/Linux-process-execution-and-the-useless-ELF-header-fields/
 # https://raw.githubusercontent.com/radareorg/r2con2019/master/talks/elf_crafting/ELF_Crafting_ulexec.pdf
 # https://board.flatassembler.net/topic.php?t=7490
-# https://bugzilla.redhat.com/show_bug.cgi?id=1381315
 #
-# - Size related i386 GCC/LD options:
+# - Size related GCC/LD options:
 # http://ptspts.blogspot.com/2013/12/how-to-make-smaller-c-and-c-binaries.html
 #
 # - Neat demoscene wiki page:
@@ -48,9 +48,6 @@
 # https://manpages.ubuntu.com/manpages/focal/man1/padsp.1.html
 # http://manuals.opensound.com/developer/DSP.html
 #
-# - To use padsp we had to make our executable dynamically linkable:
-# https://refspecs.linuxbase.org/elf/gabi4+/ch5.dynamic.html
-#
 #*/
 
 set -e
@@ -61,17 +58,20 @@ vaddr = 0x08048000
 ehdrstart:
   .byte      0x7F                       # e_ident
   .ascii     "ELF"
-  .skip      3, 1
+  .byte      2, 1, 1
+.global dynopen
+dynopen:
+ninezeroes:
   .skip      9, 0
   .word      2                          # e_type
-  .word      3                          # e_machine
+  .word      62                         # e_machine
   .long      1                          # e_version
-  .long      entry                      # e_entry
-  .long      phdrstart - elfoff         # e_phoff
-  .long      0                          # e_shoff
+  .quad      entry                      # e_entry
+  .quad      phdrstart - elfoff         # e_phoff
+  .quad      0                          # e_shoff
   .long      0                          # e_flags
   .word      ehdrsize                   # e_ehsize
-  .word      32                         # e_phentsize
+  .word      56                         # e_phentsize
   .word      3                          # e_phnum
 #Could be removed, but GDB will not happy about it:
   .skip      6, 0
@@ -80,63 +80,71 @@ ehdrsize = . - ehdrstart
 phdrstart:
 #PT_INTERP
   .long      3                          # p_type
-  .long      interp - elfoff            # p_offset
-  .long      interp                     # p_vaddr
-  .long      0                          # p_paddr
-  .long      interpsz                   # p_filesz
-  .long      interpsz                   # p_memsz
   .long      7                          # p_flags
-  .long      0x0000                     # p_align
+  .quad      interp - elfoff            # p_offset
+  .quad      interp                     # p_vaddr
+  .quad      0                          # p_paddr
+  .quad      interpsz                   # p_filesz
+  .quad      interpsz                   # p_memsz
+  .quad      0x0000                     # p_align
 
 #PT_DYNAMIC
   .long      2                          # p_type
-  .long      dynamic - elfoff           # p_offset
-  .long      dynamic                    # p_vaddr
-  .long      0                          # p_paddr
-  .long      dynamicsz                  # p_filesz
-  .long      dynamicsz                  # p_memsz
   .long      7                          # p_flags
-  .long      0x0000                     # p_align
+  .quad      dynamic - elfoff           # p_offset
+  .quad      dynamic                    # p_vaddr
+  .quad      0                          # p_paddr
+  .quad      dynamicsz                  # p_filesz
+  .quad      dynamicsz                  # p_memsz
+  .quad      0x0000                     # p_align
 
 #PT_LOAD
   .long      1                          # p_type
-  .long      0                          # p_offset
-  .long      vaddr                      # p_vaddr
-  .long      0                          # p_paddr
-  .long      filesz                     # p_filesz
-  .long      memsz                      # p_memsz
   .long      7                          # p_flags
-  .long      0x1000                     # p_align
+  .quad      0                          # p_offset
+  .quad      vaddr                      # p_vaddr
+  .quad      0                          # p_paddr
+  .quad      filesz                     # p_filesz
+  .quad      memsz                      # p_memsz
+  .quad      0x0000                     # p_align
 
 interp:
-  .asciz "/lib/ld-linux.so.2"
+  .asciz "/lib64/ld-linux-x86-64.so.2"
 interpsz = . - interp
 
 dynamic:
 #Fake hash:
-  .long       4,  symbols   # DT_HASH
-  .long       5,  strings   # DT_STRTAB
-  .long       6,  symbols   # DT_SYMTAB
-  .long       10, stringssz # DT_STRSZ
-  .long       11, 16        # DT_SYMENT
-  .long       17, relocs    # DT_REL
-  .long       18, relocssz  # DT_RELSZ
-  .long       19, 8         # DT_RELENT
-  .long       0,  0
+  .quad     4,  symtab                # DT_HASH
+  .quad     5,  strtab                # DT_STRTAB
+  .quad     6,  symtab                # DT_SYMTAB
+  .quad     10, 1                     # DT_STRSZ
+  .quad     11, 24                    # DT_SYMENT
+  .quad     7,  rela                  # DT_RELA
+  .quad     8,  relasz                # DT_RELASZ
+  .quad     9,  24                    # DT_RELAENT
+  .quad     0,  0
 dynamicsz = . - dynamic
 
-#todo : Can use zero range from beginning of ELF.
-strings:
-  .byte   0
-stringssz = . - strings
+#todo : Overlap zero byte with null entry of dynamic.
+strtab:
+  .byte     0
+  .asciz    "open"
 
-#todo : Can use zero range from beginning of ELF.
-symbols:
-  .long   0, 0, 0, 0
-symbolssz = . - symbols
+#todo : Overlap first zero byte with null terminator of "open".
+#todo : Reuse in somewhere else.
+symtab:
+  .skip     24, 0
+  .long     1               # strtab index
+  .byte     2 << 4 + 2, 0   # STB_GLOBAL, STT_FUNC, STV_DEFAULT
+  .word     0               # No section header info
+  .quad     0, 0
 
-relocs:
-relocssz = . - relocs
+#todo : Can we use rel instead ?
+rela:
+  .quad     dynopen     # r_offset
+  .quad     1 << 32 + 1 # r_info
+  .quad     0           # r_addend
+relasz = . - rela
 ELF_HEADER_SOURCE
 
 #todo : Use / tmp /
@@ -166,15 +174,15 @@ SECTIONS {
 OUTPUT_FORMAT(binary)
 LINKER_SCRIPT_SOURCE
 
-as --32 -o elf.o elf.as
-cc -c -o ./bare-bones.o -x c -std=gnu89 $0 -m32 -nostdlib -Os \
+as --64 -o elf.o elf.as
+cc -c -o ./bare-bones.o -x c -std=gnu89 $0 -nostdlib -Os \
   -DBARE_BONES -Wall -Wextra -Wpedantic -Werror -march=core2 \
-  -fno-stack-protector -fomit-frame-pointer -mpreferred-stack-boundary=2 \
+  -fno-stack-protector -fomit-frame-pointer -mpreferred-stack-boundary=3 \
   -falign-functions=1 -falign-jumps=1 -falign-loops=1 -fno-unwind-tables \
   -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident -fno-stack-check \
   -mno-stack-arg-probe -Qn -fno-PIC -fno-PIE -static -fno-plt \
-  -ffunction-sections -fdata-sections -DDEBUG
-ld -m elf_i386 -T ld.scr -s -o bare-bones ./elf.o ./bare-bones.o \
+  -ffunction-sections -fdata-sections
+ld -m elf_x86_64 -T ld.scr -s -o bare-bones ./elf.o ./bare-bones.o \
   --build-id=none -z norelro -z noseparate-code --no-eh-frame-hdr \
   --no-ld-generated-unwind-info --hash-style=sysv \
   -z nodynamic-undefined-weak --gc-sections
@@ -188,6 +196,8 @@ exit;
 
 #ifdef BARE_BONES
 
+#define EXELTR "./bare-bones"
+#define NULLPTR (void *)0
 #define LENGTHOF(p_arr) (sizeof(p_arr) / sizeof(*p_arr))
 
 #ifdef DEBUG
@@ -200,18 +210,11 @@ exit;
     }                                                                          \
   }
 #else
-#define ASSERT(p_expr)                                                         \
-  if (!(p_expr))                                                               \
-  __builtin_unreachable()
+#define ASSERT(p_expr) (p_expr) ? (void)0 : __builtin_unreachable()
 #endif /* ifdef DEBUG */
 
-/* https://chromium.googlesource.com/chromiumos/docs/+/master/constants/syscalls.md#x86-32_bit
+/* https://chromium.googlesource.com/chromiumos/docs/+/master/constants/syscalls.md#x86_64-64_bit
  */
-#define SYS_EXIT_NUMBER 1
-#define SYS_WRITE_NUMBER 4
-#define SYS_OPEN_NUMBER 5
-#define SYS_EXECVE_NUMBER 11
-#define SYS_VFORK_NUMBER 190
 
 /* todo: Generic SYS_CALL macro?
  * https://github.com/Jorengarenar/CMObALL/blob/master/cmoball.h
@@ -219,45 +222,46 @@ exit;
 
 /* https://man7.org/linux/man-pages/man2/exit.2.html */
 #define SYS_EXIT(p_return_code)                                                \
-  asm volatile("int $0x80" : : "a"(SYS_EXIT_NUMBER), "b"(p_return_code))
+  asm volatile("syscall" : : "a"(60), "D"(p_return_code) : "rcx", "r11")
 
 /* https://man7.org/linux/man-pages/man2/write.2.html
  * todo: "m" is only valid for GCC, not Clang.
  * https://stackoverflow.com/questions/56432259/how-can-i-indicate-that-the-memory-pointed-to-by-an-inline-asm-argument-may-be
  */
 #define SYS_WRITE(p_fd, p_msg, p_msg_len)                                      \
-  asm volatile("int $0x80"                                                     \
+  asm volatile("syscall"                                                       \
                : "=a"(sys_result)                                              \
-               : "a"(SYS_WRITE_NUMBER), "b"(p_fd), "c"(p_msg), "d"(p_msg_len)  \
-               : "memory")
+               : "a"(1), "D"(p_fd), "S"(p_msg), "d"(p_msg_len)                 \
+               : "rcx", "r11", "memory")
 
-#define FD_STDIN 00
-#define FD_STDOUT 01
+#define FD_STDIN 0
+#define FD_STDOUT 1
 
 #define SYS_WRITE_LITERAL(p_fd, p_msg) SYS_WRITE(p_fd, p_msg, sizeof(p_msg) - 1)
 
 /* https://man7.org/linux/man-pages/man2/open.2.html */
 #define SYS_OPEN(p_fd_out, p_path, p_flags)                                    \
-  asm volatile("int $0x80"                                                     \
+  asm volatile("syscall"                                                       \
                : "=a"(p_fd_out)                                                \
-               : "a"(SYS_OPEN_NUMBER), "b"(p_path), "c"(p_flags), "d"(0666),   \
-                 "m"(*(const char(*)[sizeof(p_path)])(p_path)))
+               : "a"(2), "D"(p_path), "S"(p_flags), "d"(0666),                 \
+                 "m"(*(const char(*)[sizeof(p_path)])(p_path))                 \
+               : "rcx", "r11")
 
-#define O_RDONLY 00
-#define O_WRONLY 01
+#define O_RDONLY 0
+#define O_WRONLY 1
 
 /* https://man7.org/linux/man-pages/man2/execve.2.html
  * note: Reuses NULL at the end of wrapping_args for envp
  */
 #define SYS_EXECVE(p_path, p_argv, p_envp)                                     \
-  asm volatile("int $0x80"                                                     \
+  asm volatile("syscall"                                                       \
                : "=a"(sys_result)                                              \
-               : "a"(SYS_EXECVE_NUMBER), "b"(p_path), "c"(p_argv), "d"(p_envp) \
-               : "memory")
+               : "a"(59), "D"(p_path), "S"(p_argv), "d"(p_envp)                \
+               : "rcx", "r11", "memory")
 
 /* https://man7.org/linux/man-pages/man2/vfork.2.html */
 #define SYS_VFORK(p_result_out)                                                \
-  asm volatile("int $0x80" : "=a"(p_result_out) : "a"(SYS_VFORK_NUMBER));
+  asm volatile("syscall" : "=a"(p_result_out) : "a"(58) : "rcx", "r11");
 
 #define ASCII_ESCAPE "\x1b"
 #define SIXEL_MODE_START ASCII_ESCAPE "P7q"
@@ -286,39 +290,41 @@ static int int_to_buffer(int in, char *out) {
 /* todo: Try making it auto variable */
 static int sys_result;
 
+/* Dynamic relocations used to bridge to libpulsedsp.so */
+extern int (*dynopen)(const char *filename, int flags, ...);
+
 /* todo: Shorten the executable name */
-/*
-static const char exe[] = "./bare-bones";
-static const char *const wrapping_args[8] = {
-    exe, "xterm", "-ti", "vt340", "-geometry", "125x40", exe, (void *)0};
-*/
+static char const *const exe = EXELTR;
+#define NULLSTR &(exe[LENGTHOF(EXELTR) - 1])
+static char const *const wrapping_args[8] = {
+    NULLSTR, "xterm", "-ti", "vt340", "-geometry", "125x40", exe, NULLPTR};
 
 /* todo: Prelude could be 'unmapped' and reused as .data after it is executed,
  * assuming no reentry */
 __attribute((naked)) void entry(void) {
-  char const **envp;
   int dsp_fd;
 
-  /* Get envp to later pass to execve */
-  asm inline("movl $4, %%eax\n\t"
-             "mull (%%esp)\n\t"
-             "addl %%esp, %%eax\n\t"
-             "addl $8, %%eax\n\t"
-             : "=a"(envp));
-
-  /* Try opening /dev/dsp, if not present - wrap current process in emulated
-   * vt340 xterm and padsp */
-  SYS_OPEN(dsp_fd, "/dev/dsp", O_WRONLY);
-  if (dsp_fd >= 0) {
+  /* Assume that if no open is relocated it's the initial execution */
+  if (!dynopen) {
+    char const **envp;
+    asm volatile("movq $8, %%rax\n\t"
+                 "mulq (%%rsp)\n\t"
+                 "addq %%rsp, %%rax\n\t"
+                 "addq $16, %%rax\n\t"
+                 : "=a"(envp));
+    SYS_EXECVE("/usr/bin/padsp", wrapping_args, envp);
+    ASSERT(0);
   }
+
+  ASSERT((dsp_fd = dynopen("/dev/dsp", O_WRONLY)) >= 0);
 
   while (1) {
     int i;
+    SYS_WRITE(dsp_fd, "\x10\x00", 2);
     SYS_WRITE_LITERAL(FD_STDOUT, ASCII_ESCAPE "[0;0H" SIXEL_MODE_START);
     for (i = 0; i < 83; ++i)
       SYS_WRITE_LITERAL(FD_STDOUT, "!750~-");
     SYS_WRITE_LITERAL(FD_STDOUT, "!750~-" SIXEL_MODE_END);
-    SYS_WRITE(dsp_fd, "\xff", 1);
   }
 
   SYS_EXIT(0);
