@@ -116,31 +116,23 @@ interp:
 interpsz = . - interp
 
 dynamic:
-#Fake hash:
-  .quad     4,  symtab                # DT_HASH
-  .quad     5,  strtab                # DT_STRTAB
-  .quad     6,  symtab                # DT_SYMTAB
-  .quad     10, 1                     # DT_STRSZ
-  .quad     11, 24                    # DT_SYMENT
-  .quad     7,  rela                  # DT_RELA
-  .quad     8,  relasz                # DT_RELASZ
-  .quad     9,  24                    # DT_RELAENT
-  .quad     0,  0
-dynamicsz = . - dynamic
-
-#todo : Overlap zero byte with null entry of dynamic.
-strtab:
-  .byte     0
-  .asciz    "open"
-
-#todo : Overlap first zero byte with null terminator of "open".
-#todo : Reuse in somewhere else.
+  .quad     5,  strtab      # DT_STRTAB
+  .quad     6,  symtab      # DT_SYMTAB
+  .quad     10, 1           # DT_STRSZ
+  .quad     11, 24          # DT_SYMENT
+  .quad     7,  rela        # DT_RELA
+  .quad     8,  relasz      # DT_RELASZ
+  .quad     9,  24          # DT_RELAENT
 symtab:
   .skip     24, 0
   .long     1               # strtab index
   .byte     2 << 4 + 2, 0   # STB_GLOBAL, STT_FUNC, STV_DEFAULT
   .word     0               # No section header info
-  .quad     0, 0
+  .skip     17, 0
+strtab:
+  .byte     0
+dynamicsz = . - dynamic
+  .asciz    "open"
 
 #todo : Can we use rel instead ?
 rela:
