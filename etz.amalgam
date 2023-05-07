@@ -1,4 +1,3 @@
-#include <stddef.h>
 #if 0
 #/*
 # __/\\\\\\\\\\\\\\\_____________________________        
@@ -46,6 +45,8 @@
 # https://www.musicdsp.org/en/latest/
 # https://www.ams.jhu.edu/dan-mathofmusic/notes-intervals/
 # https://www.ams.jhu.edu/dan-mathofmusic/sound-waves/
+# https://www.earlevel.com/main/2003/03/02/the-digital-state-variable-filter/
+# https://www.cs.cmu.edu/~rbd/papers/cmj-float-to-int.html
 #
 #*/
 
@@ -113,18 +114,30 @@ SECTIONS {
 OUTPUT_FORMAT(binary)
 LINKER_SCRIPT_SOURCE
 
-as --32 -o elf.o elf.as
-cc -c -o ./etz.o -x c -std=gnu89 $0 -m32 -nostdlib -Os \
+CFLAGS="-x c -std=gnu89 $0 -m32 -nostdlib \
   -DETZ -Wall -Wextra -Wpedantic -Werror -march=core2 \
   -fno-stack-protector -fomit-frame-pointer -mpreferred-stack-boundary=2 \
   -falign-functions=1 -falign-jumps=1 -falign-loops=1 -fno-unwind-tables \
-  -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident -fno-stack-check \
+  -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident \
   -mno-stack-arg-probe -Qn -fno-PIC -fno-PIE -static -fno-plt \
-  -ffunction-sections -fdata-sections
-ld -m elf_i386 -T ld.scr -s -o etz ./elf.o ./etz.o \
-  --build-id=none -z norelro -z noseparate-code --no-eh-frame-hdr \
-  --no-ld-generated-unwind-info --hash-style=sysv \
-  -z nodynamic-undefined-weak --gc-sections
+  -ffunction-sections -fdata-sections -fno-stack-check"
+
+LDFLAGS="-m elf_i386 --build-id=none -z norelro -z noseparate-code \
+  --no-eh-frame-hdr --no-ld-generated-unwind-info --hash-style=sysv \
+  -z nodynamic-undefined-weak --gc-sections"
+
+if [ ! -z "$1" ] && [ $1 = DEBUG ];
+then
+  CFLAGS="$CFLAGS -O0 -g3 -ggdb -DDEBUG"
+  LDFLAGS="$LDFLAGS -eentry"
+else
+  CFLAGS="$CFLAGS -Os"
+  LDFLAGS="$LDFLAGS -T ld.scr -s"
+fi
+
+as --32 -o elf.o elf.as
+cc -c -o ./etz.o $CFLAGS
+ld -o etz ./elf.o ./etz.o $LDFLAGS
 set +e
 if [ -x $(command -v upx) ]; then
   upx ./etz -q --best --ultra-brute
@@ -224,6 +237,7 @@ static int sys_result;
  * https://www.cs.uaf.edu/2012/fall/cs301/lecture/11_02_other_float.html
  */
 #define FSIN(p_result, p_in) asm inline("fsin" : "=t"(p_result) : "0"(p_in))
+#define FCOS(p_result, p_in) asm inline("fcos" : "=t"(p_result) : "0"(p_in))
 
 #define ASCII_ESCAPE "\x1b"
 #define SIXEL_MODE_START ASCII_ESCAPE "P7q"
@@ -232,59 +246,72 @@ static int sys_result;
 static const char exe[] = "./etz";
 static const char *const xterm_args[9] = {
     " ", "-ti", "vt340", "-geometry", "125x40", "-e", exe, exe, (void *)0};
-static const char *const aplay_args[3] = {"aplay", "-fu8", (void *)0};
+static const char *const aplay_args[3] = {"aplay", (void *)0};
 
 #define AUDIOBUFFERSZ 1024
 #define AUDIOFRAMERATE 8000
 #define BASENOTEFREQ 440.f /* A in octave 4 */
 #define NOTEUPSCALEFACTOR
 
-static unsigned char aring[AUDIOBUFFERSZ];
+#define SHORT_FROM_CLAMPED_FLOAT(p_in) (short)((p_in)*32768)
+
+static int apipes[2];
+static short aring[AUDIOBUFFERSZ];
 static unsigned int aringoff; /* Offset to remaining frames */
 static unsigned int aringsz;  /* Remaining frames */
 
 /* todo: Preferably should not be done or present on runtime at all.
- * https://www.musicdsp.org/en/latest/Synthesis/10-fast-sine-and-cosine-calculation.html
+ * Digital state variable filter as an oscillator.
  */
 static struct sinewave {
-  float a, s, c;
-} init_sinewave(float freq, float phase) {
+  float f, s, c;
+} init_sinewave(float freq, float phase, float amplitude) {
   struct sinewave r;
-  __float80 s;
-  FSIN(s, PIFLOAT * freq / AUDIOFRAMERATE);
-  r.a = 2.f * (float)s;
-  r.s = phase + 0.5f;
-  r.c = phase;
+  __float80 v;
+  FSIN(v, PIFLOAT * freq / AUDIOFRAMERATE);
+  r.f = 2.f * (float)v;
+  FSIN(v, phase);
+  r.s = v;
+  FCOS(v, phase);
+  r.c = amplitude * (float)v;
   return r;
 }
 
 static void pump_sinewave(struct sinewave *wave) {
-  wave->s -= wave->a * wave->c;
-  wave->c += wave->a * wave->s;
+  wave->s -= wave->f * wave->c;
+  wave->c += wave->f * wave->s;
 }
 
-static struct sinewave sinesynth0;
-static struct sinewave sinesynth1;
+/* https://en.wikipedia.org/wiki/Linear_congruential_generator */
+static unsigned rand() {
+  static unsigned long x = 3333;
+  return (x = (x * 16807) % 2147483647);
+}
 
+static struct sinewave sineosc0;
+static struct sinewave sineosc1;
+
+/* todo: Sample generation should be done from one single function */
 static void init_audio(void) {
   /* todo: Can it be forced to be done on comptime? */
-  sinesynth0 = init_sinewave(BASENOTEFREQ / 8.0f, 0.f);
-  sinesynth1 = init_sinewave(BASENOTEFREQ / 2, 0.55f);
+  sineosc0 = init_sinewave(BASENOTEFREQ / 8.f, 0.f, 0.5f);
+  sineosc1 = init_sinewave(BASENOTEFREQ / 2.f, 0.5f, 0.33f);
 }
 
-static void feed_audio(int outpipe) {
+static void feed_audio(void) {
   unsigned towrite, i = 0;
   for (towrite = AUDIOBUFFERSZ - aringoff - aringsz; i < towrite; ++i) {
-    aring[aringoff + i] = (unsigned char)(sinesynth0.s * 122.5f);
-    aring[aringoff + i] += (unsigned char)(sinesynth1.s * 122.5f);
-    pump_sinewave(&sinesynth0);
-    pump_sinewave(&sinesynth1);
+    aring[aringoff + i] = SHORT_FROM_CLAMPED_FLOAT(sineosc0.s);
+    aring[aringoff + i] += SHORT_FROM_CLAMPED_FLOAT(sineosc1.s);
+    aring[aringoff + i] += (short)(rand() >> 16) / 16;
+    pump_sinewave(&sineosc0);
+    pump_sinewave(&sineosc1);
   }
   aringsz += towrite;
-  SYS_WRITE(outpipe, aring + aringoff, aringsz);
-  ASSERT(sys_result >= 0 || sys_result != -41);
-  aringsz -= sys_result;
-  aringoff += sys_result;
+  SYS_WRITE(apipes[1], aring + aringoff, aringsz * 2);
+  ASSERT(sys_result >= 0);
+  aringsz -= sys_result / 2;
+  aringoff += sys_result / 2;
   ASSERT(aringoff <= AUDIOBUFFERSZ);
   if (aringoff == AUDIOBUFFERSZ)
     aringoff = 0;
@@ -292,14 +319,16 @@ static void feed_audio(int outpipe) {
 
 __attribute((naked)) void entry(void) {
   char const **envp;
-  int argc, apid, apipes[2];
+  int argc, apid;
 
   asm inline("movl $4, %%eax\n\t"
              "movl (%%esp), %%ebx\n\t"
              "mull %%ebx\n\t"
              "addl %%esp, %%eax\n\t"
              "addl $8, %%eax\n\t"
-             : "=a"(envp), "=b"(argc));
+             : "=a"(envp), "=b"(argc)
+             :
+             : "cc");
 
   /* Assume that argc == 1 means bootstrapping execution */
   if (argc == 1) {
@@ -323,12 +352,14 @@ __attribute((naked)) void entry(void) {
   init_audio();
 
   while (1) {
-    int i;
-    feed_audio(apipes[1]);
+    /* int i; */
+    feed_audio();
+    /*
     SYS_WRITE_LITERAL(FD_STDOUT, ASCII_ESCAPE "[0;0H" SIXEL_MODE_START);
     for (i = 0; i < 83; ++i)
       SYS_WRITE_LITERAL(FD_STDOUT, "!750~-");
     SYS_WRITE_LITERAL(FD_STDOUT, "!750~-" SIXEL_MODE_END);
+    */
   }
 
   SYS_EXIT(0);
