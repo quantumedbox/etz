@@ -47,6 +47,7 @@
 # https://www.ams.jhu.edu/dan-mathofmusic/sound-waves/
 # https://www.earlevel.com/main/2003/03/02/the-digital-state-variable-filter/
 # https://www.cs.cmu.edu/~rbd/papers/cmj-float-to-int.html
+# https://thewolfsound.com/sine-saw-square-triangle-pulse-basic-waveforms-in-synthesis/
 #
 #*/
 
@@ -245,15 +246,16 @@ static int sys_result;
 
 static const char exe[] = "./etz";
 static const char *const xterm_args[9] = {
-    " ", "-ti", "vt340", "-geometry", "125x40", "-e", exe, exe, (void *)0};
+    "-ti", "-ti", "vt340", "-geometry", "125x40", "-e", exe, exe, (void *)0};
 static const char *const aplay_args[3] = {"aplay", (void *)0};
 
 #define AUDIOBUFFERSZ 1024
 #define AUDIOFRAMERATE 8000
 #define BASENOTEFREQ 440.f /* A in octave 4 */
-#define NOTEUPSCALEFACTOR
+#define NOTEUPSCALEFACTOR 1.059463094f
+#define NOTEDOWNSCALEFACTOR 0.943874313f
 
-#define SHORT_FROM_CLAMPED_FLOAT(p_in) (short)((p_in)*32768)
+#define SHORT_FROM_CLAMPED_FLOAT(p_in) (short)((p_in)*32767)
 
 static int apipes[2];
 static short aring[AUDIOBUFFERSZ];
@@ -265,21 +267,46 @@ static unsigned int aringsz;  /* Remaining frames */
  */
 static struct sinewave {
   float f, s, c;
-} init_sinewave(float freq, float phase, float amplitude) {
+} init_sinewave(float freq, float phase, float amp) {
   struct sinewave r;
   __float80 v;
   FSIN(v, PIFLOAT * freq / AUDIOFRAMERATE);
   r.f = 2.f * (float)v;
   FSIN(v, phase);
-  r.s = v;
+  r.s = amp * (float)v;
   FCOS(v, phase);
-  r.c = amplitude * (float)v;
+  r.c = amp * (float)v;
   return r;
 }
 
 static void pump_sinewave(struct sinewave *wave) {
   wave->s -= wave->f * wave->c;
   wave->c += wave->f * wave->s;
+}
+
+/* https://www.musicdsp.org/en/latest/Synthesis/69-fast-square-wave-generator.html
+ */
+static struct sqrtwave {
+  struct sinewave w;
+  union {
+    float f;
+    unsigned u;
+  } v;
+} init_sqrtwave(float freq, float phase, float amp) {
+  struct sqrtwave r;
+  r.w = init_sinewave(freq, phase, 1.f);
+  r.v.f = amp;
+  return r;
+}
+
+static void pump_sqrtwave(struct sqrtwave *wave) {
+  union {
+    float f;
+    unsigned u;
+  } v;
+  pump_sinewave(&wave->w);
+  v.f = wave->w.s;
+  wave->v.u = (wave->v.u & 0x7fffffff) | (v.u & 0x80000000);
 }
 
 /* https://en.wikipedia.org/wiki/Linear_congruential_generator */
@@ -290,28 +317,40 @@ static unsigned rand() {
 
 static struct sinewave sineosc0;
 static struct sinewave sineosc1;
+static struct sqrtwave sqrtosc0;
+static struct sqrtwave sqrtosc1;
 
 /* todo: Sample generation should be done from one single function */
 static void init_audio(void) {
   /* todo: Can it be forced to be done on comptime? */
-  sineosc0 = init_sinewave(BASENOTEFREQ / 8.f, 0.f, 0.5f);
-  sineosc1 = init_sinewave(BASENOTEFREQ / 2.f, 0.5f, 0.33f);
+  sineosc0 = init_sinewave(BASENOTEFREQ * NOTEUPSCALEFACTOR / 4.f, 0.f, 0.15f);
+  sineosc1 = init_sinewave(
+      BASENOTEFREQ * NOTEDOWNSCALEFACTOR * NOTEDOWNSCALEFACTOR, 0.33f, 0.33f);
+  sqrtosc0 = init_sqrtwave(BASENOTEFREQ, 0.5f, 0.33f);
+  sqrtosc1 = init_sqrtwave(BASENOTEFREQ / 2.f, 0.f, 0.15f);
 }
 
 static void feed_audio(void) {
+  /* Feed aplay until first partial write */
   unsigned towrite, i = 0;
   for (towrite = AUDIOBUFFERSZ - aringoff - aringsz; i < towrite; ++i) {
     aring[aringoff + i] = SHORT_FROM_CLAMPED_FLOAT(sineosc0.s);
     aring[aringoff + i] += SHORT_FROM_CLAMPED_FLOAT(sineosc1.s);
-    aring[aringoff + i] += (short)(rand() >> 16) / 16;
+    aring[aringoff + i] += SHORT_FROM_CLAMPED_FLOAT(sqrtosc0.v.f);
+    aring[aringoff + i] += SHORT_FROM_CLAMPED_FLOAT(sqrtosc1.v.f);
+    aring[aringoff + i] += (short)(rand() >> 16) * 0;
     pump_sinewave(&sineosc0);
     pump_sinewave(&sineosc1);
+    pump_sqrtwave(&sqrtosc0);
+    pump_sqrtwave(&sqrtosc1);
   }
   aringsz += towrite;
   SYS_WRITE(apipes[1], aring + aringoff, aringsz * 2);
   ASSERT(sys_result >= 0);
-  aringsz -= sys_result / 2;
-  aringoff += sys_result / 2;
+  sys_result /= 2;
+  ASSERT((unsigned)sys_result <= aringsz);
+  aringsz -= sys_result;
+  aringoff += sys_result;
   ASSERT(aringoff <= AUDIOBUFFERSZ);
   if (aringoff == AUDIOBUFFERSZ)
     aringoff = 0;
@@ -352,14 +391,12 @@ __attribute((naked)) void entry(void) {
   init_audio();
 
   while (1) {
-    /* int i; */
+    int i;
     feed_audio();
-    /*
     SYS_WRITE_LITERAL(FD_STDOUT, ASCII_ESCAPE "[0;0H" SIXEL_MODE_START);
     for (i = 0; i < 83; ++i)
       SYS_WRITE_LITERAL(FD_STDOUT, "!750~-");
     SYS_WRITE_LITERAL(FD_STDOUT, "!750~-" SIXEL_MODE_END);
-    */
   }
 
   SYS_EXIT(0);
