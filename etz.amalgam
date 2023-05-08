@@ -244,18 +244,19 @@ static int sys_result;
 #define SIXEL_MODE_START ASCII_ESCAPE "P7q"
 #define SIXEL_MODE_END ASCII_ESCAPE "\\"
 
+#define AUDIOFRAMERATE 44000
+
 static const char exe[] = "./etz";
 static const char *const xterm_args[9] = {
     "-ti", "-ti", "vt340", "-geometry", "125x40", "-e", exe, exe, (void *)0};
-static const char *const aplay_args[3] = {"aplay", (void *)0};
+static const char *const aplay_args[3] = {"aplay", "-r44000", (void *)0};
 
-#define AUDIOBUFFERSZ 1024
-#define AUDIOFRAMERATE 8000
+#define AUDIOBUFFERSZ 4096
 #define BASENOTEFREQ 440.f /* A in octave 4 */
 #define NOTEUPSCALEFACTOR 1.059463094f
 #define NOTEDOWNSCALEFACTOR 0.943874313f
 
-#define SHORT_FROM_CLAMPED_FLOAT(p_in) (short)((p_in)*32767)
+#define FRAME_FROM_CLAMPED_FLOAT(p_in) (short)((p_in)*32767.f)
 
 static int apipes[2];
 static short aring[AUDIOBUFFERSZ];
@@ -309,6 +310,24 @@ static void pump_sqrtwave(struct sqrtwave *wave) {
   wave->v.u = (wave->v.u & 0x7fffffff) | (v.u & 0x80000000);
 }
 
+static struct sawtwave {
+  float v, a, i;
+} init_sawtwave(float freq, float phase, float amp) {
+  struct sawtwave r;
+  __float80 v;
+  FSIN(v, phase);
+  r.v = (float)v * amp;
+  r.a = amp;
+  r.i = freq / AUDIOFRAMERATE * amp;
+  return r;
+}
+
+static void pump_sawtwave(struct sawtwave *wave) {
+  wave->v += wave->i;
+  if (wave->v > wave->a)
+    wave->v -= wave->a;
+}
+
 /* https://en.wikipedia.org/wiki/Linear_congruential_generator */
 static unsigned rand() {
   static unsigned long x = 3333;
@@ -316,33 +335,28 @@ static unsigned rand() {
 }
 
 static struct sinewave sineosc0;
-static struct sinewave sineosc1;
 static struct sqrtwave sqrtosc0;
-static struct sqrtwave sqrtosc1;
+static struct sawtwave sawtosc0;
 
 /* todo: Sample generation should be done from one single function */
 static void init_audio(void) {
   /* todo: Can it be forced to be done on comptime? */
-  sineosc0 = init_sinewave(BASENOTEFREQ * NOTEUPSCALEFACTOR / 4.f, 0.f, 0.15f);
-  sineosc1 = init_sinewave(
-      BASENOTEFREQ * NOTEDOWNSCALEFACTOR * NOTEDOWNSCALEFACTOR, 0.33f, 0.33f);
-  sqrtosc0 = init_sqrtwave(BASENOTEFREQ, 0.5f, 0.33f);
-  sqrtosc1 = init_sqrtwave(BASENOTEFREQ / 2.f, 0.f, 0.15f);
+  sineosc0 = init_sinewave(BASENOTEFREQ / 4.f, 0.1f, 0.0f);
+  sqrtosc0 = init_sqrtwave(BASENOTEFREQ, PIFLOAT + 0.5f, 0.0f);
+  sawtosc0 = init_sawtwave(BASENOTEFREQ / 2.f, PIFLOAT + 0.5f, 0.8f);
 }
 
 static void feed_audio(void) {
   /* Feed aplay until first partial write */
   unsigned towrite, i = 0;
   for (towrite = AUDIOBUFFERSZ - aringoff - aringsz; i < towrite; ++i) {
-    aring[aringoff + i] = SHORT_FROM_CLAMPED_FLOAT(sineosc0.s);
-    aring[aringoff + i] += SHORT_FROM_CLAMPED_FLOAT(sineosc1.s);
-    aring[aringoff + i] += SHORT_FROM_CLAMPED_FLOAT(sqrtosc0.v.f);
-    aring[aringoff + i] += SHORT_FROM_CLAMPED_FLOAT(sqrtosc1.v.f);
+    aring[aringoff + i] = FRAME_FROM_CLAMPED_FLOAT(sineosc0.s);
+    aring[aringoff + i] += FRAME_FROM_CLAMPED_FLOAT(sqrtosc0.v.f);
+    aring[aringoff + i] += FRAME_FROM_CLAMPED_FLOAT(sawtosc0.v);
     aring[aringoff + i] += (short)(rand() >> 16) * 0;
     pump_sinewave(&sineosc0);
-    pump_sinewave(&sineosc1);
     pump_sqrtwave(&sqrtosc0);
-    pump_sqrtwave(&sqrtosc1);
+    pump_sawtwave(&sawtosc0);
   }
   aringsz += towrite;
   SYS_WRITE(apipes[1], aring + aringoff, aringsz * 2);
